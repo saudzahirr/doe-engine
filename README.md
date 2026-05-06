@@ -1,2 +1,2 @@
-# doe-simulator
+# DOE Engine
 Design of Experiments
