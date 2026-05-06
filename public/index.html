@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DOE Engine</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <style>
+        :root {
+            --bg: #ffffff;
+            --fg: #111111;
+            --line: #1a1a1a;
+            --muted: #666666;
+            --panel: #fafafa;
+            --danger-bg: #f6f6f6;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+            background: var(--bg);
+            color: var(--fg);
+        }
+
+        .page {
+            max-width: 980px;
+            margin: 0 auto;
+            padding: 32px 18px 40px;
+        }
+
+        .title {
+            margin: 0;
+            font-size: 1.9rem;
+            letter-spacing: -0.03em;
+        }
+
+        .subtitle {
+            margin: 8px 0 22px;
+            color: var(--muted);
+            font-size: 0.95rem;
+        }
+
+        .card {
+            border: 1px solid var(--line);
+            background: var(--panel);
+            padding: 16px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 12px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .hint {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 0.82rem;
+        }
+
+        select,
+        input,
+        button {
+            width: 100%;
+            border: 1px solid var(--line);
+            border-radius: 0;
+            background: #fff;
+            color: var(--fg);
+            font-size: 0.95rem;
+            padding: 10px 11px;
+        }
+
+        button {
+            margin-top: 16px;
+            cursor: pointer;
+            background: #111111;
+            color: #ffffff;
+            font-weight: 600;
+        }
+
+        .button-secondary {
+            width: auto;
+            margin-top: 10px;
+            margin-bottom: 10px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 10px;
+            background: #ffffff;
+            color: #111111;
+        }
+
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        .status {
+            margin-top: 12px;
+            min-height: 22px;
+            font-size: 0.9rem;
+        }
+
+        .error {
+            border: 1px solid var(--line);
+            background: var(--danger-bg);
+            padding: 9px 10px;
+        }
+
+        .results {
+            margin-top: 22px;
+        }
+
+        .results h2 {
+            font-size: 1.08rem;
+            margin: 0 0 8px;
+        }
+
+        .table-wrap {
+            overflow: auto;
+            border: 1px solid var(--line);
+            background: #fff;
+            max-height: 440px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 0.9rem;
+        }
+
+        th,
+        td {
+            border: 1px solid var(--line);
+            padding: 7px;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        th:first-child,
+        td:first-child {
+            text-align: center;
+            font-weight: 600;
+            background: #f2f2f2;
+        }
+
+        .empty {
+            color: var(--muted);
+            margin: 10px 0 0;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+<main id="app" class="page">
+    <h1 class="title">DOE Engine</h1>
+    <p class="subtitle">Select a design method, fill parameters, and generate the design matrix.</p>
+
+    <section class="card">
+        <div class="grid">
+            <div>
+                <label for="method">Method</label>
+                <select id="method" v-model="selectedMethod" @change="onMethodChange" :disabled="loadingMethods || !methods.length">
+                    <option value="" disabled>Select method</option>
+                    <option v-for="method in methods" :key="method.method" :value="method.method">
+                        {{ method.label }}
+                    </option>
+                </select>
+                <div class="hint" v-if="currentMethod">{{ currentMethod.description }}</div>
+            </div>
+
+            <div v-for="param in currentParams" :key="param.key">
+                <label :for="`param-${param.key}`">{{ param.label }}</label>
+                <input
+                        :id="`param-${param.key}`"
+                        type="number"
+                        step="1"
+                        :min="param.min ?? undefined"
+                        :max="param.max ?? undefined"
+                        v-model.number="paramValues[param.key]"
+                />
+                <div class="hint" v-if="param.min !== null || param.max !== null">
+                    {{ limitText(param) }}
+                </div>
+            </div>
+        </div>
+
+        <button @click="generateDesign" :disabled="isGenerateDisabled">
+            {{ generating ? "Generating..." : "Generate Design" }}
+        </button>
+
+        <div class="status">
+            <div class="error" v-if="errorMessage">{{ errorMessage }}</div>
+        </div>
+    </section>
+
+    <section class="results" v-if="designMatrix">
+        <h2>Design Matrix ({{ designMatrix.length }} runs)</h2>
+        <button class="button-secondary" @click="downloadCsv">⬇ CSV</button>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>#</th>
+                    <th v-for="index in columnCount" :key="index">X{{ index }}</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr v-for="(row, rowIndex) in designMatrix" :key="rowIndex">
+                    <td>{{ rowIndex + 1 }}</td>
+                    <td v-for="(value, colIndex) in row" :key="colIndex">{{ formatCell(value) }}</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <p class="empty" v-if="!designMatrix && !errorMessage">No matrix generated yet.</p>
+</main>
+
+<script>
+    const { createApp } = Vue;
+
+    createApp({
+        data() {
+            return {
+                methods: [],
+                selectedMethod: "",
+                paramValues: {},
+                designMatrix: null,
+                errorMessage: "",
+                loadingMethods: false,
+                generating: false
+            };
+        },
+        computed: {
+            isFileProtocol() {
+                return window.location.protocol === "file:";
+            },
+            currentMethod() {
+                return this.methods.find((m) => m.method === this.selectedMethod) || null;
+            },
+            currentParams() {
+                return this.currentMethod ? this.currentMethod.params : [];
+            },
+            columnCount() {
+                return this.designMatrix && this.designMatrix.length > 0 ? this.designMatrix[0].length : 0;
+            },
+            isGenerateDisabled() {
+                if (this.isFileProtocol || this.generating || !this.currentMethod) {
+                    return true;
+                }
+
+                return this.currentParams.some((param) => {
+                    const value = this.paramValues[param.key];
+                    return value === null || value === undefined || Number.isNaN(value);
+                });
+            }
+        },
+        methods: {
+            async loadMethods() {
+                this.loadingMethods = true;
+                this.errorMessage = "";
+
+                if (this.isFileProtocol) {
+                    this.errorMessage = "Open this app through Spring Boot at http://localhost:8080 (not as a file:// page).";
+                    this.loadingMethods = false;
+                    return;
+                }
+
+                try {
+                    const response = await fetch("/api/doe/methods");
+                    if (!response.ok) {
+                        throw new Error("Could not load DOE methods.");
+                    }
+
+                    this.methods = await response.json();
+
+                    if (this.methods.length > 0) {
+                        this.selectedMethod = this.methods[0].method;
+                        this.initializeParams();
+                    }
+                } catch (error) {
+                    this.errorMessage = error.message || "Failed to load methods.";
+                } finally {
+                    this.loadingMethods = false;
+                }
+            },
+            onMethodChange() {
+                this.initializeParams();
+                this.designMatrix = null;
+                this.errorMessage = "";
+            },
+            initializeParams() {
+                const values = {};
+                this.currentParams.forEach((param) => {
+                    values[param.key] = param.defaultValue ?? param.min ?? 1;
+                });
+                this.paramValues = values;
+            },
+            limitText(param) {
+                if (param.min !== null && param.max !== null) {
+                    return `Range: ${param.min} to ${param.max}`;
+                }
+                if (param.min !== null) {
+                    return `Minimum: ${param.min}`;
+                }
+                if (param.max !== null) {
+                    return `Maximum: ${param.max}`;
+                }
+                return "";
+            },
+            formatCell(value) {
+                return Number.isInteger(value) ? value : Number(value).toFixed(4);
+            },
+            downloadCsv() {
+                if (!this.designMatrix || this.designMatrix.length === 0) {
+                    return;
+                }
+
+                const columnCount = this.designMatrix[0].length;
+                const headers = Array.from({ length: columnCount }, (_, i) => `X${i + 1}`);
+                const rows = this.designMatrix.map((row) => row.map((value) => `${value}`));
+                const csvContent = [headers, ...rows]
+                    .map((line) => line.join(","))
+                    .join("\n");
+
+                const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                const method = this.selectedMethod || "doe";
+
+                link.href = url;
+                link.setAttribute("download", `${method}-design-matrix.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+            },
+            async generateDesign() {
+                this.generating = true;
+                this.errorMessage = "";
+                this.designMatrix = null;
+
+                try {
+                    const response = await fetch("/api/doe/execute", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            method: this.selectedMethod,
+                            params: this.paramValues
+                        })
+                    });
+
+                    const payload = await response.json();
+
+                    if (!response.ok) {
+                        this.errorMessage = payload.error || "Request failed.";
+                        return;
+                    }
+
+                    this.designMatrix = payload.designMatrix;
+                } catch (error) {
+                    this.errorMessage = error.message || "Network error while generating design.";
+                } finally {
+                    this.generating = false;
+                }
+            }
+        },
+        mounted() {
+            this.loadMethods();
+        }
+    }).mount("#app");
+</script>
+</body>
+</html>
